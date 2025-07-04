@@ -1,0 +1,6 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "agent": "./ai_agent_tc_generator.py:graph"
+  }
+}

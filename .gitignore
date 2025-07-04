@@ -1,0 +1,10 @@
+.venv
+inputs/example_tcs/.DS_Store
+inputs/screenshots
+inputs/swrs/*.xlsx
+brain_DB_CLIP
+brain_DB_MXBAI
+outputs/*/
+studio/ai_agent/__pycache__
+studio/ai_agent/.langgraph_api
+studio/ai_agent/outputs
