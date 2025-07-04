@@ -24,4 +24,6 @@ You should see the following output:
 Open your browser and navigate to the Studio UI: `https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024`.
 
 ## Current Status of Project
-- You can as the AI_Agent to create one TC at a time, and provide it with Human feedback to assess its completeness.
+- You can ask the AI_Agent to create multiple test cases at a time to cover all of the software requirements that are releated to the feature you want to test. You can then provide it with Human feedback to fill in any holes in the test cases that are generated in the outputs folder.
+
+Note: I have omitted the inputs that I used to run this AI Agent due to the confidential nature of this information. 
