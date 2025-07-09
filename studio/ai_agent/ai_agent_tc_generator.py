@@ -14,6 +14,9 @@ from langgraph.graph.message import add_messages, AnyMessage
 from typing import Annotated, TypedDict, List
 from langgraph.graph import StateGraph, START, END
 from IPython.display import Image, display
+import base64
+from PIL import Image
+from io import BytesIO
 
 chosen_emb_model = "CLIP"
 # chosen_emb_model = "MXBAI"
@@ -54,10 +57,6 @@ print(model_name)
 
 
 #Have a way to separate if data is coming from image source or text source
-import base64
-from PIL import Image
-from io import BytesIO
-
 def decode_base64_image(base64_string):
     """Decode a Base64 string into a PIL.Image.Image object."""
     image_data = base64.b64decode(base64_string)
@@ -252,6 +251,7 @@ def print_raw_retrieved_doc(prompt, results, iter):
             file.write(result.metadata["source"] + "\n\n")
     file.close()
 
+
 def retrieve(state):
     global numb_ret
     """
@@ -264,14 +264,83 @@ def retrieve(state):
         state (dict): New key added to state, documents, that contains retrieved documents
     """
     print("---RETRIEVE---")
-    question = state["question"]
-
-    # Retrieval
-    documents = retriever.invoke(question, k=numb_ret) 
-    iter = 1
-    print_raw_retrieved_doc(question, documents, str(iter))
     
-    return {"documents": documents, "question": question, "iter": iter}
+    iter = state["iter"]
+
+    if iter == 0 or iter == None:
+        iter = 1
+        question = state["question"]
+        documents = retriever.invoke(question, k=numb_ret)
+        print_raw_retrieved_doc(question, documents, str(iter))
+        return {"question": question, "documents": documents, "iter": iter}
+    else:
+        iter = state["iter"] + 1
+        iter = iter + 1
+        new_question = state["new_question"]
+        new_documents = retriever.invoke(new_question, k=numb_ret) 
+        print_raw_retrieved_doc(new_question, new_documents, str(iter))
+        return {"new_question": new_question, "new_documents": new_documents, "iter": iter}
+
+
+def grade_documents(state):
+    """
+    Determines whether the retrieved documents are relevant to the question.
+
+    Args:
+        state (dict): The current graph state
+
+    Returns:
+        state (dict): Updates documents key with only filtered relevant documents
+    """
+
+    print("---CHECK DOCUMENT RELEVANCE TO QUESTION---")
+
+    question = state["question"]
+    documents = state["documents"]
+    iter = state["iter"]
+
+    if iter > 1:
+        new_question = state["new_question"]
+        question = question + " and " + new_question
+        new_documents = state["new_documents"]
+
+        #Append only unique new documents to the documents List; Exclude any duplicates
+        for i in range(len(new_documents)):
+            if new_documents[i] not in documents:
+                documents.append(new_documents[i])
+
+    # Score each doc
+    filtered_docs = []
+    for d in documents:
+        score = retrieval_grader.invoke({"question": question, "document": d.page_content})
+        grade = score.binary_score
+        if grade == "yes":
+            print("---GRADE: DOCUMENT RELEVANT---")
+            filtered_docs.append(d)
+        else:
+            print("---GRADE: DOCUMENT NOT RELEVANT---")
+            continue
+
+    return {"question": question, "documents": filtered_docs, "new_documents": None}
+
+def transform_query(state):
+    """
+    Transform the query to produce a better question.
+
+    Args:
+        state (dict): The current graph state
+
+    Returns:
+        New key added to state, generation, that contains LLM generation
+    """
+
+    print("---TRANSFORM QUERY---")
+    question = state["question"]
+    documents = state["documents"]
+
+    # Re-write question
+    better_question = question_rewriter.invoke({"question": question})
+    return {"documents": documents, "question": better_question}
 
 def generate(state):
     """
@@ -295,61 +364,43 @@ def generate(state):
     chain = prompt | sel_model
     example1 = all_tc_contents[0]
     example2 = all_tc_contents[1]
-    answer = chain.invoke({"example1": example1, "example2": example2, "feature": question, "context": processed_docs})
+    example4 = all_tc_contents[3]
+    example5 = all_tc_contents[4]
+    example6 = all_tc_contents[5]
+    example7 = all_tc_contents[6]
+    example8 = all_tc_contents[7]
+    
+    answer = chain.invoke({"example1": example1, "example2": example2, "example3": example5,
+                           "feature": question, "context": processed_docs})
 
     iter = state["iter"]
 
     output_TC(question, processed_docs, answer.pretty_repr(), str(iter))
-    return {"documents": documents, "question": question, "generated_answer": answer}
+    return {"documents": documents, "question": question, "generation": answer}
 
-def grade_documents(state):
-    """
-    Determines whether the retrieved documents are relevant to the question.
+def hallucination_checker(state):
+    """ 
+    Given the Generated Test Case, 
+    Check that the content is grounded in facts.
 
-    Args:
+    Args: 
         state (dict): The current graph state
-
+    
     Returns:
-        state (dict): Updates documents key with only filtered relevant documents
+        state (dict): Updates new_question key with key terms of specs that are missing from test case.
     """
-
-    print("---CHECK DOCUMENT RELEVANCE TO QUESTION---")
-    question = state["question"]
+    print("---EVALUATING TEST CASE CONTENT FOR HALLUCINATIONS---")
     documents = state["documents"]
+    generation = state["generation"]
 
-    # Score each doc
-    filtered_docs = []
-    for d in documents:
-        score = retrieval_grader.invoke(
-            {"question": question, "document": d.page_content}
-        )
-        grade = score.binary_score
-        if grade == "yes":
-            print("---GRADE: DOCUMENT RELEVANT---")
-            filtered_docs.append(d)
-        else:
-            print("---GRADE: DOCUMENT NOT RELEVANT---")
-            continue
-    return {"documents": filtered_docs, "question": question}
-
-def transform_query(state):
-    """
-    Transform the query to produce a better question.
-
-    Args:
-        state (dict): The current graph state
-
-    Returns:
-        New key added to state, generation, that contains LLM generation
-    """
-
-    print("---TRANSFORM QUERY---")
-    question = state["question"]
-    documents = state["documents"]
-
-    # Re-write question
-    better_question = question_rewriter.invoke({"question": question})
-    return {"documents": documents, "question": better_question}
+    score = hallucination_grader.invoke({"documents": documents, "generation": generation})
+    grade = score.binary_score
+    
+    if grade == "yes":
+        return {"generation": "hallucinations"}
+    else:
+        return {"generation": "no_hallucinations"}
+    
 
 def human_feedback(state):
     """
@@ -363,101 +414,13 @@ def human_feedback(state):
         state (dict): Updates new_question key with key terms of specs that are missing from test case.
     """
 
-    print("---EVALUATING TEST CASE CONTENT---")
+    print("---EVALUATING TEST CASE CONTENT FOR COMPLETENESS---")
     
 
     missing_info = input("Enter any information that is missing as input to the test case that was generated. Or type 'None':")
     print("Human said the missing feedback is: ", missing_info)
     return{"new_question": missing_info}
 
-def retrieve_additional(state):
-    global numb_ret
-    """
-    Retrieve documents
-
-    Args:
-        state (dict): The current graph state
-
-    Returns:
-        state (dict): New key added to state, new_documents, that contains retrieved documents using the missing topics
-    """
-    print("---RETRIEVE---")
-    new_question = state["new_question"]
-    iter = state["iter"] + 1
-    
-    # Retrieval
-    new_documents = retriever.invoke(new_question, k=numb_ret) 
-    print_raw_retrieved_doc(new_question, new_documents, str(iter))
-    
-    return {"new_documents": new_documents, "iter": iter}
-
-def grade_additional_documents(state):
-    """
-    Determines whether the new retrieved documents are relevant to the old and new question.
-
-    Args:
-        state (dict): The current graph state
-
-    Returns:
-        state (dict): Updates documents key with only filtered relevant documents
-    """
-
-    print("---CHECK DOCUMENT RELEVANCE TO QUESTION---")
-    question = state["question"]
-    new_question = state["new_question"]
-    question = question + " and " + new_question
-
-    new_documents = state["new_documents"]
-
-    # Score each doc
-    filtered_docs = []
-    for d in new_documents:
-        score = retrieval_grader.invoke(
-            {"question": question, "document": d.page_content}
-        )
-        grade = score.binary_score
-        if grade == "yes":
-            print("---GRADE: DOCUMENT RELEVANT---")
-            filtered_docs.append(d)
-        else:
-            print("---GRADE: DOCUMENT NOT RELEVANT---")
-            continue
-    return {"question": question, "new_documents": filtered_docs}
-
-def generate_again(state):
-    """
-    Generate answer
-
-    Args:
-        state (dict): The current graph state
-
-    Returns:
-        state (dict): New key added to state, generation, that contains LLM generation
-    """
-    print("---GENERATE AGAIN---")
-    question = state["question"]
-    documents = state["documents"]
-    new_documents = state["new_documents"]
-
-    #Append only new documents to the documents List; Exclude any duplicates
-    for i in range(len(new_documents)):
-        if new_documents[i] not in documents:
-            documents.append(new_documents[i])
-
-    processed_docs = reshape_results(documents)
-
-    # RAG generation
-    template = template_ex_TC_from_file
-    prompt = ChatPromptTemplate.from_template(template)
-    chain = prompt | sel_model
-    example1 = all_tc_contents[0]
-    example2 = all_tc_contents[1]
-    
-    answer = chain.invoke({"example1": example1, "example2": example2, "feature": question, "context": processed_docs})
-
-    iter = state["iter"]
-    output_TC(question, processed_docs, answer.pretty_repr(), str(iter))
-    return {"documents": documents, "generated_answer": answer}
 
 def decide_to_generate(state):
     """
@@ -476,13 +439,20 @@ def decide_to_generate(state):
 
     if not filtered_documents:
         # If No documents are related to the feature, then we will rephrase the feature to generate test cases on. 
-        print(
-            "---DECISION: ALL DOCUMENTS ARE NOT RELEVANT TO QUESTION, TRANSFORM QUERY---"
-        )
+        print("---DECISION: ALL DOCUMENTS ARE NOT RELEVANT TO QUESTION, TRANSFORM QUERY---")
         return "transform_query"
     else:
         # We have relevant documents, so generate answer
         print("---DECISION: GENERATE---")
+        return "generate"
+    
+def decide_if_hallucinated(state):
+    generated_tc = state["generation"]
+    if generated_tc == "no_hallucinations":
+        print("---DECISION: NO HALLUCINATIONS---")
+        return "human_feedback"
+    else:
+        print("---DECISION: HALLUCINATIONS ARE PRESENT, REGENERATE A RESPONSE")
         return "generate"
 
 def decide_to_approve(state):
@@ -490,7 +460,7 @@ def decide_to_approve(state):
     
     if new_query != "None":
         print("---RETRIEVE MISSING SPECS FROM DATABASE---")
-        return "retrieve_additional"
+        return "retrieve"
     else:
         print("--END--")
         return "end"
@@ -503,9 +473,6 @@ workflow.add_node("grade_documents", grade_documents)  # grade documents
 workflow.add_node("generate", generate)  # generate
 workflow.add_node("transform_query", transform_query)  # transform_query
 workflow.add_node("human_feedback", human_feedback) #review the TC generated and ensure there was no missing inputs
-workflow.add_node("retrieve_additional", retrieve_additional)
-workflow.add_node("grade_additional_documents", grade_additional_documents)
-workflow.add_node("generate_again", generate_again)
 
 # Define the edges
 workflow.add_edge(START, "retrieve")
@@ -515,8 +482,8 @@ workflow.add_conditional_edges(
     decide_to_generate,
     {
         "transform_query": "transform_query",
-        "generate": "generate"
-    },
+        "generate": "generate",
+    }
 )
 workflow.add_edge("transform_query", "retrieve")
 workflow.add_edge("generate", "human_feedback")
@@ -524,13 +491,10 @@ workflow.add_conditional_edges(
     "human_feedback", 
     decide_to_approve,
     {
-        "retrieve_additional": "retrieve_additional",
+        "retrieve": "retrieve",
         "end": END,
     }
 )
-workflow.add_edge("retrieve_additional", "grade_additional_documents")
-workflow.add_edge("grade_additional_documents", "generate_again")
-workflow.add_edge("generate_again", "human_feedback")
 
 # Compile/Build the graph
 graph = workflow.compile(interrupt_before=["human_feedback"])
