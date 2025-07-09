@@ -377,29 +377,6 @@ def generate(state):
 
     output_TC(question, processed_docs, answer.pretty_repr(), str(iter))
     return {"documents": documents, "question": question, "generation": answer}
-
-def hallucination_checker(state):
-    """ 
-    Given the Generated Test Case, 
-    Check that the content is grounded in facts.
-
-    Args: 
-        state (dict): The current graph state
-    
-    Returns:
-        state (dict): Updates new_question key with key terms of specs that are missing from test case.
-    """
-    print("---EVALUATING TEST CASE CONTENT FOR HALLUCINATIONS---")
-    documents = state["documents"]
-    generation = state["generation"]
-
-    score = hallucination_grader.invoke({"documents": documents, "generation": generation})
-    grade = score.binary_score
-    
-    if grade == "yes":
-        return {"generation": "hallucinations"}
-    else:
-        return {"generation": "no_hallucinations"}
     
 
 def human_feedback(state):
